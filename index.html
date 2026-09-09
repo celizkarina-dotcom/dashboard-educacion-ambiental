@@ -14,6 +14,37 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-auth.js";
+  import { getFirestore, doc, getDoc, setDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAQBlzxEFVXSC4ReYVG16FrJoE6Vt0Z30A",
+    authDomain: "dashboard-educacion-ambiental.firebaseapp.com",
+    projectId: "dashboard-educacion-ambiental",
+    storageBucket: "dashboard-educacion-ambiental.firebasestorage.app",
+    messagingSenderId: "147214123603",
+    appId: "1:147214123603:web:92914554f21c5312a97ca6"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const provider = new GoogleAuthProvider();
+  const ADMIN_EMAILS = ["celizkarina@gmail.com"];
+  const DOC_REF = doc(db, "dashboards", "main");
+
+  // Exponer al scope global para usar desde el resto del código
+  window.firebaseApp = {
+    auth, db, provider, DOC_REF,
+    signInWithPopup, signOut, onAuthStateChanged,
+    getDoc, setDoc, onSnapshot, serverTimestamp,
+    ADMIN_EMAILS,
+    isAdmin: (user) => user && ADMIN_EMAILS.includes(user.email)
+  };
+  window.dispatchEvent(new CustomEvent('firebase-ready'));
+</script>
 <style>
 :root {
   --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0;
@@ -185,13 +216,28 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans
       </div>
     </div>
     <div class="header-actions">
+      <div id="authArea" style="display:flex; gap:10px; align-items:center;">
+        <button class="btn btn-outline" id="btnLogin" onclick="loginWithGoogle()" style="display:none;">
+          <svg width="14" height="14" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+          Login con Google
+        </button>
+        <div id="userChip" style="display:none; align-items:center; gap:8px; padding:6px 12px; background:#f1f5f9; border-radius:20px; font-size:12px; color:var(--text-secondary);">
+          <img id="userAvatar" style="width:22px;height:22px;border-radius:50%;" alt="">
+          <span id="userName"></span>
+          <button onclick="logout()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:0 2px;" title="Cerrar sesión">×</button>
+        </div>
+      </div>
       <button class="btn btn-primary" onclick="openImport()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         Actualizar datos
       </button>
-      <button class="btn btn-outline" onclick="downloadJSON()">
+      <button class="btn btn-outline" onclick="downloadExcel()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Descargar JSON
+        Descargar Excel
+      </button>
+      <button class="btn btn-gold" id="btnPublish" onclick="publishOnline()" style="display:none;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        Publicar en línea
       </button>
     </div>
   </div>
@@ -459,6 +505,125 @@ function loadData() {
   }
   DATA = EMBEDDED_DATA;
 }
+
+// ============ FIREBASE INTEGRATION ============
+let currentUser = null;
+let firebaseInitialized = false;
+
+function initFirebase() {
+  if (!window.firebaseApp) { setTimeout(initFirebase, 100); return; }
+  firebaseInitialized = true;
+  const fb = window.firebaseApp;
+
+  // Botón login visible al iniciar
+  document.getElementById('btnLogin').style.display = 'inline-flex';
+
+  // Escuchar cambios de sesión
+  fb.onAuthStateChanged(fb.auth, (user) => {
+    currentUser = user;
+    updateAuthUI();
+  });
+
+  // Escuchar cambios en tiempo real desde Firestore (todos ven cambios al instante)
+  try {
+    fb.onSnapshot(fb.DOC_REF, (snap) => {
+      if (snap.exists()) {
+        const remoteData = snap.data();
+        if (remoteData && remoteData.data && remoteData.updated_at) {
+          const localVersion = (DATA.meta && DATA.meta.version) || '';
+          const remoteVersion = (remoteData.data.meta && remoteData.data.meta.version) || '';
+          // Solo actualizar si la versión remota es distinta (evita loop)
+          if (remoteVersion !== localVersion || !localStorage.getItem('dashboardData_v2')) {
+            DATA = remoteData.data;
+            try { localStorage.setItem('dashboardData_v2', JSON.stringify(DATA)); } catch(e) {}
+            renderAll();
+            const t = document.getElementById('toast');
+            if (remoteVersion && localVersion && remoteVersion !== localVersion) {
+              showToast('🔄 Datos actualizados desde la nube');
+            }
+          }
+        }
+      }
+    }, (err) => console.warn('Firestore listener error:', err));
+  } catch(e) { console.warn('No se pudo suscribir a Firestore:', e); }
+}
+
+function updateAuthUI() {
+  const btnLogin = document.getElementById('btnLogin');
+  const chip = document.getElementById('userChip');
+  const btnPublish = document.getElementById('btnPublish');
+  const fb = window.firebaseApp;
+
+  if (currentUser) {
+    btnLogin.style.display = 'none';
+    chip.style.display = 'inline-flex';
+    document.getElementById('userAvatar').src = currentUser.photoURL || '';
+    document.getElementById('userName').textContent = currentUser.displayName || currentUser.email;
+
+    // Solo admins pueden publicar
+    if (fb.isAdmin(currentUser)) {
+      btnPublish.style.display = 'inline-flex';
+    } else {
+      btnPublish.style.display = 'none';
+    }
+  } else {
+    btnLogin.style.display = 'inline-flex';
+    chip.style.display = 'none';
+    btnPublish.style.display = 'none';
+  }
+}
+
+window.loginWithGoogle = async function() {
+  if (!firebaseInitialized) return;
+  const fb = window.firebaseApp;
+  try {
+    await fb.signInWithPopup(fb.auth, fb.provider);
+    showToast('✅ Sesión iniciada');
+  } catch(err) {
+    console.error(err);
+    showToast('⚠️ Error al iniciar sesión: ' + err.message);
+  }
+};
+
+window.logout = async function() {
+  if (!firebaseInitialized) return;
+  const fb = window.firebaseApp;
+  try {
+    await fb.signOut(fb.auth);
+    showToast('Sesión cerrada');
+  } catch(err) { console.error(err); }
+};
+
+window.publishOnline = async function() {
+  if (!firebaseInitialized) return;
+  const fb = window.firebaseApp;
+  if (!currentUser || !fb.isAdmin(currentUser)) {
+    showToast('⚠️ Necesitás estar logueado como admin');
+    return;
+  }
+  if (!confirm('¿Publicar los datos actuales para que los vean todos los usuarios? Esta acción reemplaza la versión en línea.')) return;
+
+  try {
+    document.getElementById('btnPublish').disabled = true;
+    showToast('⏳ Publicando datos en la nube...');
+    await fb.setDoc(fb.DOC_REF, {
+      data: DATA,
+      updated_at: fb.serverTimestamp(),
+      updated_by: currentUser.email,
+      updated_by_name: currentUser.displayName || currentUser.email
+    });
+    showToast('🌐 ¡Datos publicados! Todos los usuarios ven la nueva versión.');
+  } catch(err) {
+    console.error(err);
+    showToast('⚠️ Error al publicar: ' + err.message);
+  } finally {
+    document.getElementById('btnPublish').disabled = false;
+  }
+};
+
+// Inicializar Firebase cuando esté listo
+if (window.firebaseApp) initFirebase();
+else window.addEventListener('firebase-ready', initFirebase);
 
 // ============ CHART DEFAULTS ============
 Chart.defaults.font.family = "'Inter', -apple-system, sans-serif";
@@ -1218,18 +1383,116 @@ function applyImport() {
   try { localStorage.setItem('dashboardData_v2', JSON.stringify(DATA)); } catch(e) {}
   renderAll();
   closeImport();
-  showToast('✅ Datos actualizados. Descargá el JSON para publicar a todos.');
+  showToast('✅ Datos actualizados. Descargá el Excel si querés respaldar.');
 }
 
-function downloadJSON() {
-  const blob = new Blob([JSON.stringify(DATA, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'dashboard-data-' + (DATA.meta.version || 'export') + '.json';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  showToast('📥 JSON descargado. Reemplazá en el HTML para publicar.');
+function downloadExcel() {
+  try {
+    const wb = XLSX.utils.book_new();
+    const k = DATA.kpis;
+
+    // Solapa 1: Resumen (KPIs y totales)
+    const resumen = [
+      ['DASHBOARD DE EDUCACIÓN AMBIENTAL ESCOLAR'],
+      ['Fecha de exportación', new Date().toLocaleDateString('es-AR')],
+      ['Versión de la base', DATA.meta && DATA.meta.version || '—'],
+      [],
+      ['INDICADORES PRINCIPALES', 'Valor'],
+      ['Escuelas alcanzadas', k.escuelas_alcanzadas],
+      ['Escuelas con programa activo', k.escuelas_con_programa],
+      ['Escuelas visitadas (diagnóstico)', k.escuelas_visitadas],
+      ['Escuelas emblemáticas', k.escuelas_emblematicas],
+      ['Asistencias de alumnos', k.asistencias_alumnos],
+      ['Asistencias de docentes en programas', k.asistencias_docentes],
+      ['Docentes formados (formación con puntaje)', k.docentes_formados],
+      ['Docentes alcanzados (total)', k.docentes_total],
+      ['Programas activos', k.programas_activos],
+      ['Talleres dictados', k.total_talleres],
+      ['Eventos de formación docente', k.total_eventos_formacion],
+      ['Huertas entregadas', k.huertas_entregadas],
+      ['Plantas entregadas', k.plantas_entregadas],
+    ];
+    const wsResumen = XLSX.utils.aoa_to_sheet(resumen);
+    wsResumen['!cols'] = [{ wch: 40 }, { wch: 15 }];
+    XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen');
+
+    // Solapa 2: Programas
+    const progHeaders = [['Programa', 'Escuelas', 'Asistencias Alumnos', 'Asistencias Docentes', 'Talleres', 'Entregas']];
+    const progRows = (DATA.programs || []).map(p => [p.nombre, p.escuelas, p.alumnos, p.docentes, p.talleres, p.entregas || '']);
+    const wsProg = XLSX.utils.aoa_to_sheet([...progHeaders, ...progRows]);
+    wsProg['!cols'] = [{ wch: 28 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 12 }, { wch: 30 }];
+    XLSX.utils.book_append_sheet(wb, wsProg, 'Programas');
+
+    // Solapa 3: Seccionales
+    const secHeaders = [['Seccional', 'Escuelas', 'Asistencias Alumnos', 'Programas distintos']];
+    const secRows = (DATA.seccionales || []).map(s => ['Seccional ' + s.seccional, s.escuelas, s.alumnos, s.programas]);
+    const wsSec = XLSX.utils.aoa_to_sheet([...secHeaders, ...secRows]);
+    wsSec['!cols'] = [{ wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, wsSec, 'Seccionales');
+
+    // Solapa 4: Top Barrios
+    const barHeaders = [['Barrio', 'Escuelas', 'Asistencias Alumnos']];
+    const barRows = (DATA.top_barrios || []).map(b => [b.barrio, b.escuelas, b.alumnos]);
+    const wsBar = XLSX.utils.aoa_to_sheet([...barHeaders, ...barRows]);
+    wsBar['!cols'] = [{ wch: 30 }, { wch: 12 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, wsBar, 'Top Barrios');
+
+    // Solapa 5: Entregas
+    const entHeaders = [['Categoría', 'Cantidad']];
+    const entRows = (DATA.entregas || []).sort((a,b) => b.total - a.total).map(e => [e.tipo, e.total]);
+    const wsEnt = XLSX.utils.aoa_to_sheet([...entHeaders, ...entRows]);
+    wsEnt['!cols'] = [{ wch: 25 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, wsEnt, 'Entregas');
+
+    // Solapa 6: Escuelas Emblemáticas
+    const emb = (DATA.emblematicas && DATA.emblematicas.schools) || [];
+    const embHeaders = [['CUE', 'Escuela', 'Barrio', 'Nivel', 'Sector', 'Asist. Alumnos', 'Asist. Docentes', 'Programas']];
+    const embRows = emb.map(s => [s.cue, s.n, s.b, s.t, s.sec, s.al, s.do, (s.p || []).join(', ')]);
+    const wsEmb = XLSX.utils.aoa_to_sheet([...embHeaders, ...embRows]);
+    wsEmb['!cols'] = [{ wch: 14 }, { wch: 45 }, { wch: 22 }, { wch: 20 }, { wch: 12 }, { wch: 15 }, { wch: 15 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, wsEmb, 'Emblemáticas');
+
+    // Solapa 7: Todas las Escuelas
+    const allHeaders = [['CUE', 'Escuela', 'Barrio', 'Seccional', 'Nivel', 'Sector', 'Coordinador', 'Emblemática', 'Asist. Alumnos', 'Asist. Docentes', 'Programas', 'Visitada']];
+    const allRows = (DATA.schools || []).map(s => [
+      s.cue, s.n, s.b, (s.s || '').replace('.0',''), s.t, s.sec, s.coord || '',
+      s.em ? 'Sí' : '', s.al, s.do, (s.p || []).join(', '), s.v ? 'Sí' : ''
+    ]);
+    const wsAll = XLSX.utils.aoa_to_sheet([...allHeaders, ...allRows]);
+    wsAll['!cols'] = [{ wch: 14 }, { wch: 45 }, { wch: 22 }, { wch: 10 }, { wch: 20 }, { wch: 12 }, { wch: 20 }, { wch: 12 }, { wch: 15 }, { wch: 15 }, { wch: 40 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, wsAll, 'Escuelas');
+
+    // Solapa 8: Formación Docente
+    const f = DATA.formacion_docente || {};
+    const formData = [
+      ['FORMACIÓN DOCENTE — Resumen'],
+      ['Total eventos', f.total_eventos || 0],
+      ['Total docentes formados', f.total_docentes || 0],
+      [],
+      ['POR PROGRAMA'],
+      ['Programa', 'Eventos'],
+      ...(f.por_programa || []).map(p => [(p.programa || '').replace(/"/g,''), p.eventos]),
+      [],
+      ['POR MODALIDAD'],
+      ['Modalidad', 'Eventos'],
+      ...(f.por_modalidad || []).map(m => [m.modalidad, m.eventos]),
+      [],
+      ['POR MES'],
+      ['Mes', 'Eventos', 'Docentes'],
+      ...(f.por_mes || []).map(m => [m.mes, m.eventos, m.docentes]),
+    ];
+    const wsForm = XLSX.utils.aoa_to_sheet(formData);
+    wsForm['!cols'] = [{ wch: 45 }, { wch: 12 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, wsForm, 'Formación Docente');
+
+    // Generar y descargar
+    const fecha = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `dashboard-educacion-ambiental-${fecha}.xlsx`);
+    showToast('📊 Excel descargado con éxito');
+  } catch(err) {
+    console.error('Error al generar Excel:', err);
+    showToast('⚠️ Error al generar el Excel: ' + err.message);
+  }
 }
 
 function showToast(msg) {
