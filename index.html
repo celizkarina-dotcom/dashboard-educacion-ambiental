@@ -32,7 +32,7 @@
   const auth = getAuth(app);
   const db = getFirestore(app);
   const provider = new GoogleAuthProvider();
-  const ADMIN_EMAILS = ["celizkarina@gmail.com"];
+  const ADMIN_EMAILS = ["celizkarina@gmail.com", "noe.feldmann@gmail.com"];
   const DOC_REF = doc(db, "dashboards", "main");
 
   // Exponer al scope global para usar desde el resto del código
@@ -695,7 +695,10 @@ function initMapMain() {
   if (mapMain) { mapMain.remove(); }
   mapMain = L.map('map', { preferCanvas: true }).setView([-31.42, -64.19], 12);
   window.mapMain = mapMain;
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 19 }).addTo(mapMain);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles © Esri — Fuentes: Esri, HERE, Garmin, OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(mapMain);
   markersMain = L.markerClusterGroup({
     showCoverageOnHover: false, maxClusterRadius: 40,
     iconCreateFunction: function(cluster) {
@@ -796,8 +799,10 @@ function initMapEmb() {
     maxBoundsViscosity: 1.0
   });
   window.mapEmb = mapEmb;
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap', maxZoom: 19, crossOrigin: true
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles © Esri',
+    maxZoom: 19,
+    crossOrigin: true
   }).addTo(mapEmb);
   const embSchools = (DATA.emblematicas && DATA.emblematicas.schools) || [];
   const validPoints = [];
@@ -1082,9 +1087,17 @@ function processFile(file) {
   reader.onload = function(e) {
     try {
       const wb = XLSX.read(e.target.result, { type: 'array' });
-      if (!wb.SheetNames.includes('Impacto_Looker')) {
+      // Buscar la hoja "Impacto_Looker" comparando por Unicode NFC (por si el nombre viene con acentos combinados)
+      const impactoSheetKey = wb.SheetNames.find(k =>
+        k.normalize('NFC') === 'Impacto_Looker'.normalize('NFC')
+      );
+      if (!impactoSheetKey) {
         result.innerHTML = '<div class="import-summary warn">⚠️ No se encontró la hoja "Impacto_Looker". Verificá el archivo.</div>';
         return;
+      }
+      // Renombrar (si hace falta) para que parseExcel encuentre la hoja
+      if (impactoSheetKey !== 'Impacto_Looker') {
+        wb.Sheets['Impacto_Looker'] = wb.Sheets[impactoSheetKey];
       }
       const newData = parseExcel(wb);
       const diff = computeDiff(DATA, newData);
@@ -1100,7 +1113,16 @@ function processFile(file) {
 
 function parseExcel(wb) {
   const sheet = wb.Sheets['Impacto_Looker'];
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+  const rowsRaw = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+  // Normalizar keys Unicode a NFC — arregla el caso donde É está como E+acento combinado
+  // (pasa cuando el Excel se edita en Google Sheets/Numbers y luego se exporta)
+  const rows = rowsRaw.map(r => {
+    const out = {};
+    for (const k of Object.keys(r)) {
+      out[k.normalize('NFC')] = r[k];
+    }
+    return out;
+  });
 
   // Barrio centroids for emb geo
   const barrioPts = {};
@@ -1272,8 +1294,17 @@ function parseExcel(wb) {
   // Formacion docente — agrupar por ID Evento (cada evento es único, no cada fila)
   const eventos = {};
   const escuelasFormacion = new Set();
-  if (wb.Sheets['FormaciónDocente_Looker']) {
-    const fRows = XLSX.utils.sheet_to_json(wb.Sheets['FormaciónDocente_Looker'], { defval: null, raw: true });
+  // Detectar la hoja de formación docente aunque el nombre tenga distinta normalización Unicode
+  const formSheetKey = Object.keys(wb.Sheets).find(k =>
+    k.normalize('NFC') === 'FormaciónDocente_Looker'.normalize('NFC')
+  );
+  if (formSheetKey) {
+    const fRowsRaw = XLSX.utils.sheet_to_json(wb.Sheets[formSheetKey], { defval: null, raw: true });
+    const fRows = fRowsRaw.map(r => {
+      const out = {};
+      for (const k of Object.keys(r)) out[k.normalize('NFC')] = r[k];
+      return out;
+    });
     fRows.forEach(r => {
       const idEv = r['ID Evento'];
       if (!idEv) return;
